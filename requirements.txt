@@ -1,0 +1,35 @@
+# --- 基础 ---
+python-dotenv
+pydantic
+pydantic-settings
+loguru
+diskcache
+pytest
+
+# --- LangGraph 体系 ---
+langgraph
+langgraph-checkpoint-sqlite
+langchain-core
+langchain-openai
+langchain-text-splitters
+
+# --- NBA 数据/资讯 ---
+nba_api
+tavily-python
+requests
+beautifulsoup4
+pandas
+lxml
+html5lib
+
+# --- Web 服务 ---
+fastapi
+uvicorn
+
+# --- RAG（阶段 2） ---
+pdfplumber
+chromadb
+sentence-transformers
+langchain-chroma
+langchain-huggingface
+langchain-text-splitters
