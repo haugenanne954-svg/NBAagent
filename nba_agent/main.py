@@ -28,6 +28,7 @@ for _stream_name in ("stdout", "stderr"):
 from langchain_core.messages import HumanMessage
 from loguru import logger
 
+from .flow import emit_flow_event, run_graph_with_flow_sync
 from .graph import build_graph
 
 
@@ -38,9 +39,12 @@ def _setup_logger(verbose: bool) -> None:
     logger.add(sys.stderr, level=level, format="<level>[{level}]</level> {message}")
 
 
-def run_oneshot(query: str, thread_id: str) -> str:
+def run_oneshot(query: str, thread_id: str, stream: bool = False) -> str:
     """单次问答：构建图、执行一次 invoke、返回最终回答。"""
     graph = build_graph()
+    if stream:
+        return run_graph_with_flow_sync(graph, query, thread_id=thread_id, emit=emit_flow_event)
+
     # thread_id 用于 SQLite checkpointer 区分不同对话上下文
     config = {"configurable": {"thread_id": thread_id}}
     result = graph.invoke(
@@ -55,7 +59,7 @@ def run_oneshot(query: str, thread_id: str) -> str:
     return result["messages"][-1].content
 
 
-def run_interactive(thread_id: str) -> None:
+def run_interactive(thread_id: str, stream: bool = False) -> None:
     """交互式多轮对话：同一 thread_id 保持上下文，输入 exit/quit 退出。"""
     graph = build_graph()
     config = {"configurable": {"thread_id": thread_id}}
@@ -71,15 +75,20 @@ def run_interactive(thread_id: str) -> None:
         if query.lower() in {"exit", "quit", ":q"}:
             break
 
-        result = graph.invoke(
-            {
-                "messages": [HumanMessage(content=query)],
-                "user_query": query,
-                "visited": [],
-            },
-            config=config,
-        )
-        print(f"\n助手> {result['messages'][-1].content}")
+        if stream:
+            print("\n助手> ", end="", flush=True)
+            run_graph_with_flow_sync(graph, query, thread_id=thread_id, emit=emit_flow_event)
+            print()
+        else:
+            result = graph.invoke(
+                {
+                    "messages": [HumanMessage(content=query)],
+                    "user_query": query,
+                    "visited": [],
+                },
+                config=config,
+            )
+            print(f"\n助手> {result['messages'][-1].content}")
 
 
 def run_server(port: int = 8000) -> None:
@@ -97,6 +106,7 @@ def main() -> None:
     parser.add_argument("--interactive", "-i", action="store_true", help="进入交互式多轮")
     parser.add_argument("--serve", "-s", action="store_true", help="启动 Web 服务（浏览器交互）")
     parser.add_argument("--port", type=int, default=8000, help="Web 服务端口（默认 8000）")
+    parser.add_argument("--stream", action="store_true", help="在 CLI 中显示 LangGraph 执行进度并流式输出最终回答")
     parser.add_argument("--thread", default=None, help="对话 thread_id（多轮上下文 key）")
     parser.add_argument("--verbose", "-v", action="store_true", help="打印 DEBUG 日志")
     args = parser.parse_args()
@@ -110,15 +120,16 @@ def main() -> None:
     thread_id = args.thread or f"oneshot-{uuid.uuid4().hex[:8]}"
 
     if args.interactive:
-        run_interactive(thread_id)
+        run_interactive(thread_id, stream=args.stream)
         return
 
     if not args.query:
         parser.print_help()
         sys.exit(1)
 
-    answer = run_oneshot(args.query, thread_id)
-    print(answer)
+    answer = run_oneshot(args.query, thread_id, stream=args.stream)
+    if not args.stream:
+        print(answer)
 
 
 if __name__ == "__main__":

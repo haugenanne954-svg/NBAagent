@@ -104,6 +104,15 @@ python -m nba_agent.main "湖人最近怎么样？"
 # 交互式多轮对话
 python -m nba_agent.main --interactive --thread my-session
 
+# CLI 流式输出：展示 plan / 子 Agent 进度 / finalize token
+python -m nba_agent.main --stream --thread my-session "湖人最近怎么样？"
+
+# 交互式 + 流式
+python -m nba_agent.main --interactive --stream --thread my-session
+
+# 启动 Web 服务（含 SSE 流式接口）
+python -m nba_agent.main --serve --port 8000
+
 # 开启 DEBUG 日志
 python -m nba_agent.main -v "对比东契奇和约基奇"
 ```
@@ -162,13 +171,17 @@ python -m nba_agent.main -v "对比东契奇和约基奇"
 │  │     ├─ retriever.py            #   检索 + MMR 去冗余
 │  │     └─ tool.py                  #   query_cba_rule 工具入口
 │  └─ flow/
-│     └─ __init__.py                 # 流式输出（预留）
+│     ├─ __init__.py                 # 流式能力导出
+│     ├─ normalize.py                # LangGraph 原始事件 → 统一 flow event
+│     ├─ runner.py                   # graph.astream_events 运行器
+│     └─ terminal.py                 # CLI 事件渲染
 ├─ tests/
 │  ├─ probe_tools.py                 # 工具层直接 invoke 验证
 │  ├─ smoke_checkpoint.py            # SQLite checkpointer 落库验证
 │  ├─ smoke_multi_agent.py          # 阶段 3 端到端 smoke test
 │  ├─ smoke_phase4.py               # 阶段 4 端到端 smoke test
-│  └─ smoke_multi_turn.py           # 多轮对话状态恢复验证
+│  ├─ smoke_multi_turn.py           # 多轮对话状态恢复验证
+│  └─ test_phase5.py                # 阶段 5 快速 pytest 覆盖
 ├─ requirements.txt
 └─ .env                              # 环境变量配置
 ```
@@ -270,7 +283,17 @@ python -m tests.smoke_phase4
 
 # 多轮对话验证
 python -m tests.smoke_multi_turn
+
+# 阶段 5 快速单元测试（不调 LLM / 不访问外网）
+python -m pytest -q tests/test_phase5.py
 ```
+
+## 阶段 5 工程化能力
+
+- **CLI 多轮与流式输出**：`--thread` 复用 SQLite checkpoint，`--stream` 通过 `graph.astream_events()` 输出 Supervisor plan、子 Agent 开始/完成事件和 Finalize token。
+- **统一 Flow 层**：`nba_agent.flow` 将 LangGraph 原始事件归一化为稳定的 `plan / agent_start / agent_done / answer_delta / done / error` 事件，CLI 与 Web 共用同一套逻辑。
+- **Web/SSE**：`python -m nba_agent.main --serve` 启动 FastAPI 页面，`GET /api/stream` 返回真实 SSE 流，不再等待完整回答后模拟分段。
+- **pytest 覆盖**：`tests/test_phase5.py` 覆盖路由、state reducer、事件归一化、SSE 格式和 CBA 引用渲染，适合快速回归。
 
 ## 关键设计约束
 
@@ -288,4 +311,4 @@ python -m tests.smoke_multi_turn
 - [x] **阶段 2**：薪资工具 + CBA RAG（HoopsHype 4 个工具 + Chroma RAG 1944 chunks）
 - [x] **阶段 3**：Supervisor 多 Agent（1 Supervisor + 4 子 Agent + Finalize + conditional_edges 路由）
 - [x] **阶段 4**：分析能力（5 大高阶场景 + `get_team_advanced_stats` + prompt 模板化）
-- [x] **阶段 5**：体验与工程化（CLI 优化 / 流式输出 / pytest 覆盖 / 可选 Web 前端）
+- [x] **阶段 5**：体验与工程化（CLI `--stream` / 真实 SSE 流式 / `nba_agent.flow` / `tests/test_phase5.py` / Web 前端）

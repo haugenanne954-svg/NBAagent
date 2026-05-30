@@ -95,8 +95,11 @@ nba_agent/
 │       ├── ingest.py        # CBA PDF 入库（pdfplumber→Chroma）
 │       ├── retriever.py     # CBA RAG 检索接口
 │       └── tool.py          # query_cba_rule LangChain 工具
-└── flow/                    # 流式输出（预留，尚未实现）
-    └── __init__.py
+└── flow/                    # 阶段 5：流式输出与事件归一化
+    ├── __init__.py
+    ├── normalize.py         # LangGraph 原始事件 → 统一 flow event
+    ├── runner.py            # graph.astream_events 运行器
+    └── terminal.py          # CLI 事件渲染
 ```
 
 ## 快速开始
@@ -154,9 +157,25 @@ python -m nba_agent.main "湖人最近怎么样？"
 # 交互式多轮对话
 python -m nba_agent.main --interactive --thread my-session
 
+# CLI 流式输出：展示 plan / 子 Agent 进度 / finalize token
+python -m nba_agent.main --stream --thread my-session "湖人最近怎么样？"
+
+# 交互式 + 流式
+python -m nba_agent.main --interactive --stream --thread my-session
+
+# 启动 Web 服务（含 SSE 流式接口）
+python -m nba_agent.main --serve --port 8000
+
 # 开启 DEBUG 日志
 python -m nba_agent.main -v "对比东契奇和约基奇"
 ```
+
+## 阶段 5：体验与工程化
+
+- **CLI**：支持单次问答、交互式多轮、`--thread` checkpoint 复用，以及 `--stream` 实时输出执行进度和最终回答 token。
+- **Flow 层**：`nba_agent.flow` 基于 `graph.astream_events()` 归一化 LangGraph 事件，输出 `plan / agent_start / agent_done / answer_delta / done / error`。
+- **Web/SSE**：`GET /api/stream` 直接消费 Flow 层事件，FastAPI 前端可以实时展示 Agent pipeline 与回答增量。
+- **测试**：新增 `tests/test_phase5.py`，覆盖路由、状态 reducer、流式事件归一化、SSE 格式和 CBA 引用渲染。
 
 ## 工具列表
 

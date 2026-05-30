@@ -20,6 +20,7 @@ import sqlite3
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
 
@@ -52,12 +53,10 @@ def route_next(state: NBAState) -> str:
     return next_node
 
 
-def build_graph(use_checkpointer: bool = True):
-    """组装 Supervisor 多 Agent 图并返回 compiled graph。"""
+def _build_builder() -> StateGraph:
+    """构建未编译的 StateGraph builder（节点和边已注册完毕）。"""
     ensure_dirs()
-
     builder = StateGraph(NBAState)
-    # 注册所有节点
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("data", data_agent_node)
     builder.add_node("news", news_agent_node)
@@ -65,21 +64,40 @@ def build_graph(use_checkpointer: bool = True):
     builder.add_node("analysis", analysis_agent_node)
     builder.add_node("finalize", finalize_node)
 
-    # 入口：START → supervisor
     builder.add_edge(START, "supervisor")
 
-    # route_map: route_next 返回值 → 实际节点名的映射
     route_map = {name: name for name in _SUBAGENT_NAMES}
     route_map["finalize"] = "finalize"
 
-    # supervisor 和每个子 Agent 执行完后，都走 route_next 决定下一步
     builder.add_conditional_edges("supervisor", route_next, route_map)
     for name in _SUBAGENT_NAMES:
         builder.add_conditional_edges(name, route_next, route_map)
 
     builder.add_edge("finalize", END)
+    return builder
 
-    # SQLite checkpointer 实现多轮对话状态持久化
+
+async def build_graph_async(use_checkpointer: bool = True):
+    """异步编译图，使用 AsyncSqliteSaver 支持 astream_events。"""
+    import aiosqlite
+
+    builder = _build_builder()
+
+    if use_checkpointer:
+        CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(CHECKPOINT_DB))
+        checkpointer = AsyncSqliteSaver(conn)
+        result = builder.compile(checkpointer=checkpointer)
+    else:
+        result = builder.compile()
+
+    return result
+
+
+def build_graph(use_checkpointer: bool = True):
+    """同步编译图（兼容旧代码），使用 SqliteSaver。"""
+    builder = _build_builder()
+
     if use_checkpointer:
         CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(CHECKPOINT_DB), check_same_thread=False)

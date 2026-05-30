@@ -31,7 +31,9 @@ def finalize_node(state: dict) -> dict:
             facts_block.append(f"\n=== {name}Agent ===\n{facts[name]}")
     facts_text = "\n".join(facts_block)
 
-    llm = get_llm(temperature=0.2, streaming=False)
+    # streaming=True lets graph.astream_events surface finalize token chunks for
+    # CLI/Web without changing the regular invoke path.
+    llm = get_llm(temperature=0.2, streaming=True)
     msgs = [
         SystemMessage(content=FINALIZE_PROMPT),
         HumanMessage(content=(

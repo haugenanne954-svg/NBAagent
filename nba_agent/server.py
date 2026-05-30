@@ -8,20 +8,19 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from loguru import logger
 
 from .agents import NBAState
 from .config import DATA_DIR, ensure_dirs
-from .graph import build_graph
+from .flow import astream_normalized_events
+from .graph import build_graph_async
 
 # ── 应用实例 ──────────────────────────────────────────────
 
@@ -34,12 +33,12 @@ _STATIC_DIR = DATA_DIR.parent / "nba_agent" / "static"
 _graph = None
 
 
-def _get_graph():
-    """懒加载 graph 实例，避免 import 时就初始化 LLM。"""
+async def _get_graph():
+    """懒加载 graph 实例（异步），使用 AsyncSqliteSaver 支持 SSE 流式。"""
     global _graph
     if _graph is None:
         ensure_dirs()
-        _graph = build_graph(use_checkpointer=True)
+        _graph = await build_graph_async(use_checkpointer=True)
     return _graph
 
 
@@ -68,22 +67,17 @@ async def chat(request: Request):
     if not query:
         return {"error": "query 不能为空"}
 
-    graph = _get_graph()
+    # 使用 graph.ainvoke 异步执行
+    graph = await _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
-
-    # 在线程池中执行阻塞的 graph.invoke
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: graph.invoke(
-            {
-                "messages": [HumanMessage(content=query)],
-                "user_query": query,
-                "visited": [],
-                "facts": {},
-            },
-            config=config,
-        ),
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content=query)],
+            "user_query": query,
+            "visited": [],
+            "facts": {},
+        },
+        config=config,
     )
 
     answer = result["messages"][-1].content if result.get("messages") else ""
@@ -119,65 +113,34 @@ async def stream(query: str, thread_id: str | None = None):
         )
 
     tid = thread_id or f"web-{uuid.uuid4().hex[:8]}"
-    graph = _get_graph()
-    config = {"configurable": {"thread_id": tid}}
+    graph = await _get_graph()
 
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            # 1. 发送 plan 信息（先跑 supervisor，单独获取 plan）
             yield _sse_event("status", "Supervisor 正在分析问题...")
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: graph.invoke(
-                    {
-                        "messages": [HumanMessage(content=query)],
-                        "user_query": query,
-                        "visited": [],
-                        "facts": {},
-                    },
-                    config=config,
-                ),
-            )
-
-            plan = result.get("plan", [])
-            visited = result.get("visited", [])
-            answer = result["messages"][-1].content if result.get("messages") else ""
-
-            # 2. 发送 plan
-            if plan:
-                yield _sse_event("plan", json.dumps({
-                    "plan": plan,
-                    "reasoning": result.get("plan_reasoning", ""),
-                }, ensure_ascii=False))
-
-            # 3. 发送每个 agent 的完成状态
-            agent_labels = {
-                "data": "数据查询",
-                "news": "资讯搜索",
-                "salary": "薪资查询",
-                "analysis": "深度分析",
-            }
-            for agent_name in visited:
-                label = agent_labels.get(agent_name, agent_name)
-                yield _sse_event("agent_done", json.dumps({
-                    "agent": agent_name,
-                    "label": label,
-                }, ensure_ascii=False))
-
-            # 4. 发送最终回答（分段模拟流式效果）
-            if answer:
-                # 将回答按段落分割，逐段发送
-                chunks = _split_answer(answer)
-                for chunk in chunks:
-                    yield _sse_event("answer", chunk)
-                    await asyncio.sleep(0.03)
-            else:
-                yield _sse_event("answer", "抱歉，本次没有获取到有效结果。")
-
-            # 5. 完成
-            yield _sse_event("done", json.dumps({"thread_id": tid}, ensure_ascii=False))
+            async for event in astream_normalized_events(graph, query.strip(), thread_id=tid):
+                event_type = event.get("type")
+                if event_type == "plan":
+                    yield _sse_event("plan", json.dumps({
+                        "plan": event.get("plan", []),
+                        "reasoning": event.get("reasoning", ""),
+                    }, ensure_ascii=False))
+                elif event_type == "agent_start":
+                    yield _sse_event("agent_start", json.dumps({
+                        "agent": event.get("agent"),
+                        "label": event.get("label"),
+                    }, ensure_ascii=False))
+                elif event_type == "agent_done":
+                    yield _sse_event("agent_done", json.dumps({
+                        "agent": event.get("agent"),
+                        "label": event.get("label"),
+                    }, ensure_ascii=False))
+                elif event_type == "answer_delta":
+                    yield _sse_event("answer", str(event.get("content", "")))
+                elif event_type == "done":
+                    yield _sse_event("done", json.dumps({"thread_id": tid}, ensure_ascii=False))
+                elif event_type == "error":
+                    yield _sse_event("error", str(event.get("message", "")))
 
         except Exception as e:
             logger.exception("[stream] error")
@@ -208,7 +171,7 @@ async def history(request: Request):
     if not thread_id:
         return {"error": "thread_id 不能为空"}
 
-    graph = _get_graph()
+    graph = await _get_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
     try:
@@ -228,26 +191,6 @@ async def history(request: Request):
 
 def _sse_event(event: str, data: str) -> str:
     """格式化一个 SSE 事件。"""
-    # 转义 data 中的换行符
-    safe_data = data.replace("\n", "\\n")
+    # 前端当前按单行 data 解析，这里保留既有约定，避免多行 markdown 被截断。
+    safe_data = data.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
     return f"event: {event}\ndata: {safe_data}\n\n"
-
-
-def _split_answer(text: str) -> list[str]:
-    """将长文本按段落分割，模拟流式推送效果。"""
-    if len(text) <= 50:
-        return [text]
-
-    chunks = []
-    remaining = text
-    while remaining:
-        # 尝试在换行符处分割，每次约 80-200 字符
-        split_at = min(200, len(remaining))
-        if split_at < len(remaining):
-            # 找最近的换行符
-            nl_pos = remaining[:split_at + 50].rfind("\n")
-            if nl_pos > 30:
-                split_at = nl_pos + 1
-        chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:]
-    return chunks
