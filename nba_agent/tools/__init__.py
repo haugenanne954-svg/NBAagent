@@ -3,6 +3,7 @@ from ..rag.cba.tool import query_cba_rule
 from .data import (
     DATA_TOOLS,
     get_daily_scoreboard,
+    get_head_to_head,
     get_league_leaders,
     get_player_career_stats,
     get_player_info,
@@ -34,6 +35,7 @@ __all__ = [
     "RAG_TOOLS",
     "get_daily_scoreboard",
     "get_team_schedule",
+    "get_head_to_head",
     "get_standings",
     "get_player_career_stats",
     "get_player_info",

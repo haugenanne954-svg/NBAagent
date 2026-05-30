@@ -22,17 +22,18 @@ def build_data_agent_prompt(now_utc: datetime | None = None) -> str:
 【你的工具优先级】
 1. 某一天有哪些比赛 / 某场比分 → `get_daily_scoreboard(date="YYYY-MM-DD")`（**传 ET 日期**）
 2. 某队最近 N 场战绩（含季后赛） → `get_team_schedule(team, season=<year>, last_n=10)`
-3. 联盟排名 → `get_standings(season=<year>, conference="east"|"west")`
-4. 球队赛季基础统计（场均 PTS/TRB/AST） → `get_team_stats(team, season=<year>)`
-5. **球队高阶数据**（Pace / ORtg / DRtg / NRtg / TS% / 四要素 + 联盟排名）→ `get_team_advanced_stats(team, season=<year>)`
-6. 球员近 N 个赛季场均 → `get_player_career_stats(player, last_n_seasons=5)`
-7. 球员基础信息 → `get_player_info(player)`
-8. 联盟排行榜 → `get_league_leaders(category, season=<year>, top_n=10)`
+3. 两队交手记录/系列赛走势/主客场战绩拆解 → `get_head_to_head(team_a, team_b, season=<year>)`（**系列赛分析必调**）
+4. 联盟排名 → `get_standings(season=<year>, conference="east"|"west")`
+5. 球队赛季基础统计（场均 PTS/TRB/AST） → `get_team_stats(team, season=<year>)`
+6. **球队高阶数据**（Pace / ORtg / DRtg / NRtg / TS% / 四要素 + 联盟排名）→ `get_team_advanced_stats(team, season=<year>)`
+7. 球员近 N 个赛季场均 → `get_player_career_stats(player, last_n_seasons=5)`
+8. 球员基础信息 → `get_player_info(player)`
+9. 联盟排行榜 → `get_league_leaders(category, season=<year>, top_n=10)`
 
 【场景驱动的工具组合】
 - **战术分析 / 球队打法** → 必调 `get_team_advanced_stats`（Pace/3PAr/FTr/ORtg/DRtg 才能讲清风格）
 - **球队对比** → 双方都调 `get_team_stats` + `get_team_advanced_stats`，让 AnalysisAgent 做对比
-- **比赛预测** → 双方近 10 场 `get_team_schedule` + 双方 `get_team_advanced_stats`
+- **比赛预测 / 系列赛分析 / 交手回顾** → 必调 `get_head_to_head`（获取两队交手主客场完整统计）+ 双方近 10 场 `get_team_schedule` + 双方 `get_team_advanced_stats`
 - **球员对比** → 两人都调 `get_player_career_stats(last_n_seasons=2)`
 
 【你的边界】
@@ -40,6 +41,7 @@ def build_data_agent_prompt(now_utc: datetime | None = None) -> str:
 - 不要做主观分析（对比、评估、预测）——那是 AnalysisAgent 的工作。
 - 输出**结构化 markdown**，便于后续 AnalysisAgent / Finalize 引用。
 - 所有数字必须附"数据来源：basketball-reference"。
+- **注意**：`get_head_to_head` 返回的结果中已包含工具计算好的主客场胜负统计，**直接引用这些数字**，不要自己再从逐场比赛中重新计数。
 
 {PLAYER_NAME_RULES}
 
@@ -174,4 +176,6 @@ def build_analysis_agent_prompt(now_utc: datetime | None = None) -> str:
 - 不能用训练知识替代上下文 facts。
 - 上下文 facts 缺关键数据时，**先列出"已有数据 / 缺失数据"**，再做受限分析，禁止补全式幻觉。
 - 注意区分常规赛 vs 季后赛（季后赛 5/13 之后的数据要特别标注）。
-"""
+- ⚠ **严禁从原始逐场赛程中手动统计/计数/聚合**（如"主场球队 X 胜 Y 负"、"谁在对方主场赢了几场"）。LLM 计数极易出错。
+  - 如果前置 DataAgent 已经通过 `get_head_to_head` 提供了聚合数字，**只引用工具返回的结构化统计**；
+  - 如果只有逐场原始数据、没有聚合数字，直接说"根据赛程数据无法可靠统计系列赛走势"，**禁止自己数**。"""
